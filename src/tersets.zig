@@ -238,3 +238,8 @@ pub fn getMaxMethodIndex() usize {
 
     return max_index;
 }
+
+// experimental to get the testing
+test {
+    std.testing.refAllDecls(mix_piece);
+}
