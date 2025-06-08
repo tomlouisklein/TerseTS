@@ -31,7 +31,7 @@ const HashMap = std.HashMap;
 
 const tersets = @import("../tersets.zig");
 const Method = tersets.Method;
-const Error = tersets.Error;
+pub const Error = tersets.Error;
 const shared = @import("../utilities/shared_structs.zig");
 const DiscretePoint = shared.DiscretePoint;
 
@@ -112,11 +112,13 @@ pub fn decompress(
         const slopes_count = @as(usize, @bitCast(compressed_lines_and_index[compressed_index + 1]));
         compressed_index += 2;
 
+        // Process each slope group
         for (0..slopes_count) |_| {
             const slope = compressed_lines_and_index[compressed_index];
             const timestamps_count = @as(usize, @bitCast(compressed_lines_and_index[compressed_index + 1]));
             compressed_index += 2;
             var timestamp: usize = 0;
+            // Extract timestamps (delta encoded)
             for (0..timestamps_count) |_| {
                 timestamp += @as(usize, @bitCast(compressed_lines_and_index[compressed_index]));
                 try segments_metadata.append(.{
@@ -130,8 +132,10 @@ pub fn decompress(
         }
     }
 
+    // Get the absolute end of the entire timestamp series
     const last_timestamp: usize = @as(usize, @bitCast(compressed_lines_and_index[compressed_index]));
 
+    // Sort segments chronologically
     mem.sort(
         SegmentMetadata,
         segments_metadata.items,
@@ -139,6 +143,7 @@ pub fn decompress(
         compareMetadataByStartTime,
     );
 
+    // Process all segments except the last
     var current_timestamp: usize = 0;
     for (0..segments_metadata.items.len - 1) |index| {
         const current_metadata = segments_metadata.items[index];
@@ -152,6 +157,7 @@ pub fn decompress(
         current_timestamp = next_metadata_start_time;
     }
 
+    // Generate decrompressed values
     const current_metadata = segments_metadata.getLast();
     try decompressSegment(
         current_metadata,
@@ -165,7 +171,7 @@ pub fn decompress(
 /// of Sim-Piece. It stores the starting time of the segment in `start_time`, the
 /// `interception` point used to create the linear function approximation, and the slopes of
 /// the upper and lower bounds that constraint the linear approximation in that segment.
-const SegmentMetadata = struct {
+pub const SegmentMetadata = struct {
     start_time: usize,
     interception: f64,
     upper_bound_slope: f64,
@@ -188,7 +194,7 @@ const HashF64Context = struct {
 
 /// Sim-Piece Phase 1: Compute `SegmentMetadata` for each segment that can be approximated
 /// by a linear function within the `error_bound` from `uncompressed_values`.
-fn computeSegmentsMetadata(
+pub fn computeSegmentsMetadata(
     uncompressed_values: []const f64,
     segments_metadata: *ArrayList(SegmentMetadata),
     error_bound: f32,
@@ -276,7 +282,7 @@ fn computeSegmentsMetadata(
 /// Sim-Piece Phase 2. Merge the elements in `segments_metadata` using Alg. 2 and store the
 /// results in `merged_segments_metadata`. The segments are merged based on the interception value.
 /// The `allocator` is used to allocate memory for the intermediate representations needed.
-fn mergeSegmentsMetadata(
+pub fn mergeSegmentsMetadata(
     segments_metadata: ArrayList(SegmentMetadata),
     merged_segments_metadata: *ArrayList(SegmentMetadata),
     allocator: mem.Allocator,
