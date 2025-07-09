@@ -655,9 +655,23 @@ const ExtendedPolygon = struct {
                 );
                 try windows.append(window);
             } else {
-                // For intermediate points, create windows that connect upper and lower boundaries
-                const upper_value = self.getUpperBoundary(point.time, i - 1);
-                const lower_value = self.getLowerBoundary(point.time, i - 1);
+                // For intermediate points, we need to consider boundaries from both adjacent segments
+                // to properly handle corners in the extended polygon
+
+                // Get boundary values from the left (segment i-1)
+                const upper_left = self.getUpperBoundary(point.time, i - 1);
+                const lower_left = self.getLowerBoundary(point.time, i - 1);
+
+                // Get boundary values from the right (segment i)
+                const upper_right = self.getUpperBoundary(point.time, i);
+                const lower_right = self.getLowerBoundary(point.time, i);
+
+                // At a corner, the window should span the full range
+                // Upper bound: maximum of both sides (least restrictive)
+                // Lower bound: minimum of both sides (least restrictive)
+                const upper_value = @max(upper_left, upper_right);
+                const lower_value = @min(lower_left, lower_right);
+
                 const window = Window.init(shared.DiscretePoint{ .time = point.time, .value = upper_value }, shared.DiscretePoint{ .time = point.time, .value = lower_value });
                 try windows.append(window);
             }
@@ -761,17 +775,21 @@ pub const ExtendedSegment = struct {
 
 // Computes a line between two DiscretePoint instances.
 pub fn computeLine(p1: shared.DiscretePoint, p2: shared.DiscretePoint) shared.LinearFunction {
+    // Handle vertical line case
+    if (p1.time == p2.time) {
+        // For vertical lines, we can't represent them properly with y = mx + b
+        // Return a line with very high slope as approximation
+        return .{ .slope = if (p2.value > p1.value) 1e10 else -1e10, .intercept = p1.value - 1e10 * @as(f64, @floatFromInt(p1.time)) };
+    }
+
     // Ensure temporal consistency: always compute line from earlier to later time.
     const earlier_point = if (p1.time <= p2.time) p1 else p2;
     const later_point = if (p1.time <= p2.time) p2 else p1;
 
     const time_diff = @as(f64, @floatFromInt(later_point.time - earlier_point.time));
-    const slope = if (time_diff > 0)
-        (later_point.value - earlier_point.value) / time_diff
-    else
-        0.0;
-
+    const slope = (later_point.value - earlier_point.value) / time_diff;
     const intercept = earlier_point.value - slope * @as(f64, @floatFromInt(earlier_point.time));
+
     return .{ .slope = slope, .intercept = intercept };
 }
 
@@ -856,9 +874,25 @@ pub const VisibleRegion = struct {
             .allocator = allocator,
         };
 
-        // Initialize the hulls with the source window's points
+        // Initialize with the source window endpoints
+        // The upper endpoint goes to upper hull, lower endpoint to lower hull
         try result.upper_boundary_hull.append(window.upper_point);
         try result.lower_boundary_hull.append(window.lower_point);
+
+        // Initialize supporting lines if both endpoints are at the same x-coordinate
+        if (window.upper_point.time == window.lower_point.time) {
+            // For a vertical window, initialize with a vertical supporting line
+            const vertical_line = shared.LinearFunction{
+                .slope = std.math.inf(f64),
+                .intercept = @as(f64, @floatFromInt(window.upper_point.time)),
+            };
+            result.z_plus = vertical_line;
+            result.z_minus = vertical_line;
+            result.l_plus = window.lower_point;
+            result.r_plus = window.upper_point;
+            result.l_minus = window.upper_point;
+            result.r_minus = window.lower_point;
+        }
 
         return result;
     }
@@ -868,33 +902,68 @@ pub const VisibleRegion = struct {
         self.lower_boundary_hull.deinit();
     }
 
-    // Add a new window to the visible region.
+    // Process a new window by adding its boundary points
     pub fn updateWithNewWindow(self: *VisibleRegion, new_window: Window) !void {
         if (self.is_closed) return;
 
-        // Add upper point to upper boundary hull (maintaining lower convexity).
-        try self.addToUpperBoundary(new_window.upper_point);
+        // Get the time of the new window
+        const window_time = @min(new_window.upper_point.time, new_window.lower_point.time);
 
-        // Add lower point to lower boundary hull (maintaining upper convexity).
+        // Only process windows that are to the right of our source
+        const source_time = @max(self.source_window.upper_point.time, self.source_window.lower_point.time);
+        if (window_time <= source_time) return;
+
+        // First check if adding this window would violate visibility constraints
+        if (self.z_plus != null and self.z_minus != null) {
+            const z_plus = self.z_plus.?;
+            const z_minus = self.z_minus.?;
+
+            // Check if the new window's points fall outside the visibility wedge
+            const time_f64 = @as(f64, @floatFromInt(window_time));
+
+            // For z_plus (upper supporting line), check if lower point is above it
+            const z_plus_at_window = z_plus.slope * time_f64 + z_plus.intercept;
+            if (new_window.lower_point.value > z_plus_at_window + 1e-10) {
+                // Lower boundary crossed above z_plus - close the region
+                self.is_closed = true;
+
+                // Create closing window at the intersection
+                const closing_upper = shared.DiscretePoint{
+                    .time = window_time,
+                    .value = z_plus_at_window,
+                };
+                self.closing_window = Window{
+                    .upper_point = closing_upper,
+                    .lower_point = closing_upper, // Degenerate window at intersection
+                };
+                return;
+            }
+
+            // For z_minus (lower supporting line), check if upper point is below it
+            const z_minus_at_window = z_minus.slope * time_f64 + z_minus.intercept;
+            if (new_window.upper_point.value < z_minus_at_window - 1e-10) {
+                // Upper boundary crossed below z_minus - close the region
+                self.is_closed = true;
+
+                // Create closing window at the intersection
+                const closing_lower = shared.DiscretePoint{
+                    .time = window_time,
+                    .value = z_minus_at_window,
+                };
+                self.closing_window = Window{
+                    .upper_point = closing_lower,
+                    .lower_point = closing_lower, // Degenerate window at intersection
+                };
+                return;
+            }
+        }
+
+        // If we get here, the window is still visible - add its points to the hulls
+        try self.addToUpperBoundary(new_window.upper_point);
         try self.addToLowerBoundary(new_window.lower_point);
 
-        // Update supporting lines.
+        // Update supporting lines after adding new points
         try self.updateSupportingLines();
-
-        // Check if visible region needs to be closed.
-        try self.checkForClosure(new_window);
-    }
-
-    // Adapt the addToHull function for upper boundary.
-    fn addToUpperBoundary(self: *VisibleRegion, point: shared.DiscretePoint) !void {
-        // For upper boundary, we maintain LOWER convexity (turns right).
-        try addToHullWithTurn(&self.upper_boundary_hull, .right, point);
-    }
-
-    // Adapt the addToHull function for lower boundary.
-    fn addToLowerBoundary(self: *VisibleRegion, point: shared.DiscretePoint) !void {
-        // For lower boundary, we maintain UPPER convexity (turns left).
-        try addToHullWithTurn(&self.lower_boundary_hull, .left, point);
     }
 
     // Reuse the addToHull logic.
@@ -913,9 +982,18 @@ pub const VisibleRegion = struct {
             try hull.append(point);
         }
     }
+    // Adapt the addToHull function for upper boundary.
+    pub fn addToUpperBoundary(self: *VisibleRegion, point: shared.DiscretePoint) !void {
+        // For upper boundary, we maintain LOWER convexity (turns right).
+        try addToHullWithTurn(&self.upper_boundary_hull, .right, point);
+    }
 
-    // The suporting lines separate the two convex hulls. z+ has the maximum slope. z- has the minimum slope.
-    // These two supporting lines are tangent to the two convex hulls at four vertices. l+, r+, l-, r-.
+    // Adapt the addToHull function for lower boundary.
+    pub fn addToLowerBoundary(self: *VisibleRegion, point: shared.DiscretePoint) !void {
+        // For lower boundary, we maintain UPPER convexity (turns left).
+        try addToHullWithTurn(&self.lower_boundary_hull, .left, point);
+    }
+
     // Updates the supporting lines (z+ and z- in the paper).
     pub fn updateSupportingLines(self: *VisibleRegion) !void {
         // Need at least one point in each hull to compute supporting lines.
@@ -923,138 +1001,87 @@ pub const VisibleRegion = struct {
             return;
         }
 
-        // Find z+ (supporting line with maximum slope).
-        try self.findMaxSlopeSupportingLine();
+        // Find all valid separating lines and choose the ones with max/min slope
+        var max_slope: f64 = -std.math.inf(f64);
+        var min_slope: f64 = std.math.inf(f64);
+        var max_slope_line: ?shared.LinearFunction = null;
+        var min_slope_line: ?shared.LinearFunction = null;
+        var max_upper_idx: usize = 0;
+        var max_lower_idx: usize = 0;
+        var min_upper_idx: usize = 0;
+        var min_lower_idx: usize = 0;
 
-        // Find z- (supporting line with minimum slope).
-        try self.findMinSlopeSupportingLine();
-    }
+        // Try all combinations of points from upper and lower hulls
+        for (self.upper_boundary_hull.items, 0..) |upper_point, u_idx| {
+            for (self.lower_boundary_hull.items, 0..) |lower_point, l_idx| {
+                // Skip if points are at the same x-coordinate (would create vertical line)
+                if (upper_point.time == lower_point.time) continue;
 
-    // Find the supporting line with maximum slope (z+).
-    fn findMaxSlopeSupportingLine(self: *VisibleRegion) !void {
-        var upper_idx: usize = self.upper_boundary_hull.items.len - 1; // Start from rightmost.
-        var lower_idx: usize = 0; // Start from leftmost.
+                const line = computeLine(upper_point, lower_point);
 
-        var improved = true;
-        while (improved) {
-            improved = false;
+                // Check if this line validly separates the hulls
+                if (self.isValidSeparatingLine(line)) {
+                    // Update max slope line
+                    if (line.slope > max_slope) {
+                        max_slope = line.slope;
+                        max_slope_line = line;
+                        max_upper_idx = u_idx;
+                        max_lower_idx = l_idx;
+                    }
 
-            // Compute current line.
-            const current_line = computeLine(
-                self.upper_boundary_hull.items[upper_idx],
-                self.lower_boundary_hull.items[lower_idx],
-            );
-
-            // Try to improve by moving left on upper hull.
-            if (upper_idx > 0) {
-                const test_line = computeLine(
-                    self.upper_boundary_hull.items[upper_idx - 1],
-                    self.lower_boundary_hull.items[lower_idx],
-                );
-
-                // Only move if it increases slope and maintains separation.
-                if (test_line.slope > current_line.slope and
-                    self.isValidSeparatingLine(test_line))
-                {
-                    upper_idx -= 1;
-                    improved = true;
-                }
-            }
-
-            // Try to improve by moving right on lower hull.
-            if (lower_idx < self.lower_boundary_hull.items.len - 1) {
-                const test_line = computeLine(
-                    self.upper_boundary_hull.items[upper_idx],
-                    self.lower_boundary_hull.items[lower_idx + 1],
-                );
-
-                // Only move if it increases slope and maintains separation.
-                if (test_line.slope > current_line.slope and
-                    self.isValidSeparatingLine(test_line))
-                {
-                    lower_idx += 1;
-                    improved = true;
+                    // Update min slope line
+                    if (line.slope < min_slope) {
+                        min_slope = line.slope;
+                        min_slope_line = line;
+                        min_upper_idx = u_idx;
+                        min_lower_idx = l_idx;
+                    }
                 }
             }
         }
 
-        // Set the supporting line z+ and its tangent points.
-        self.z_plus = computeLine(
-            self.upper_boundary_hull.items[upper_idx],
-            self.lower_boundary_hull.items[lower_idx],
-        );
-        self.r_plus = self.upper_boundary_hull.items[upper_idx]; // Right tangent on upper hull.
-        self.l_plus = self.lower_boundary_hull.items[lower_idx]; // Left tangent on lower hull.
-    }
-
-    // Find the supporting line with minimum slope (z-).
-    fn findMinSlopeSupportingLine(self: *VisibleRegion) !void {
-        var upper_idx: usize = 0; // Start from leftmost.
-        var lower_idx: usize = self.lower_boundary_hull.items.len - 1; // Start from rightmost.
-
-        var improved = true;
-        while (improved) {
-            improved = false;
-
-            // Compute current line.
-            const current_line = computeLine(self.upper_boundary_hull.items[upper_idx], self.lower_boundary_hull.items[lower_idx]);
-
-            // Try to improve by moving right on upper hull.
-            if (upper_idx < self.upper_boundary_hull.items.len - 1) {
-                const test_line = computeLine(self.upper_boundary_hull.items[upper_idx + 1], self.lower_boundary_hull.items[lower_idx]);
-
-                // Only move if it decreases slope and maintains separation.
-                if (test_line.slope < current_line.slope and
-                    self.isValidSeparatingLine(test_line))
-                {
-                    upper_idx += 1;
-                    improved = true;
-                }
-            }
-
-            // Try to improve by moving left on lower hull.
-            if (lower_idx > 0) {
-                const test_line = computeLine(self.upper_boundary_hull.items[upper_idx], self.lower_boundary_hull.items[lower_idx - 1]);
-
-                // Only move if it decreases slope and maintains separation.
-                if (test_line.slope < current_line.slope and
-                    self.isValidSeparatingLine(test_line))
-                {
-                    lower_idx -= 1;
-                    improved = true;
-                }
-            }
+        // Update z+ (max slope)
+        if (max_slope_line) |line| {
+            self.z_plus = line;
+            self.r_plus = self.upper_boundary_hull.items[max_upper_idx];
+            self.l_plus = self.lower_boundary_hull.items[max_lower_idx];
         }
 
-        // Set the supporting line z- and its tangent points.
-        self.z_minus = computeLine(
-            self.upper_boundary_hull.items[upper_idx],
-            self.lower_boundary_hull.items[lower_idx],
-        );
-        self.l_minus = self.upper_boundary_hull.items[upper_idx]; // Left tangent on upper hull.
-        self.r_minus = self.lower_boundary_hull.items[lower_idx]; // Right tangent on lower hull.
+        // Update z- (min slope)
+        if (min_slope_line) |line| {
+            self.z_minus = line;
+            self.l_minus = self.upper_boundary_hull.items[min_upper_idx];
+            self.r_minus = self.lower_boundary_hull.items[min_lower_idx];
+        }
     }
 
     // Check if a line validly separates the two hulls.
     fn isValidSeparatingLine(self: *VisibleRegion, line: shared.LinearFunction) bool {
+        // A valid separating line must have:
+        // 1. All upper hull points on or above the line
+        // 2. All lower hull points on or below the line
+
+        const epsilon = 1e-10;
+
         // Check all upper hull points are above or on the line
         for (self.upper_boundary_hull.items) |point| {
             const line_value = line.slope * @as(f64, @floatFromInt(point.time)) + line.intercept;
-            if (point.value < line_value - 1e-10) { // Small epsilon for numerical stability.
+            if (point.value < line_value - epsilon) {
                 return false;
             }
         }
 
-        // Check all lower hull points are below or on the line.
+        // Check all lower hull points are below or on the line
         for (self.lower_boundary_hull.items) |point| {
             const line_value = line.slope * @as(f64, @floatFromInt(point.time)) + line.intercept;
-            if (point.value > line_value + 1e-10) { // Small epsilon for numerical stability.
+            if (point.value > line_value + epsilon) {
                 return false;
             }
         }
 
         return true;
     }
+
     fn checkForClosure(self: *VisibleRegion, new_window: Window) !void {
         // If already closed, nothing to do.
         if (self.is_closed) {
