@@ -22,7 +22,7 @@
 //! by Prof. Ke Yi of Hong Kong University of Science and Technology.
 
 const std = @import("std");
-const stdout = std.io.getStdOut().writer();
+
 const math = std.math;
 const ArrayList = std.ArrayList;
 const mem = std.mem;
@@ -110,7 +110,7 @@ pub fn compress(
         }
     }
 
-    printVisibleRegion(&initial_vr);
+    // try printVisibleRegion(&initial_vr);
 
     if (!found_closing) {
         std.debug.print("SPECIAL CASE: Initial window can see final window directly\n", .{});
@@ -413,7 +413,7 @@ pub fn decompress(
     compressed_values: []const u8,
     decompressed_values: *ArrayList(f64),
     allocator: mem.Allocator,
-) Error!void {
+) !void {
     std.debug.print("=== DECOMPRESS START ===\n", .{});
     std.debug.print("Compressed size: {} bytes\n", .{compressed_values.len});
 
@@ -978,7 +978,7 @@ pub const VisibleRegion = struct {
         self.lower_boundary_hull.deinit();
     }
 
-    // Add debug prints to VisibleRegion.updateWithNewWindow
+    // Add debug std.debug.prints to VisibleRegion.updateWithNewWindow
     pub fn updateWithNewWindow(self: *VisibleRegion, new_window: Window) !void {
         std.debug.print("  VR.updateWithNewWindow: new_window=({},{})->({},{})\n", .{ new_window.upper_point.time, new_window.upper_point.value, new_window.lower_point.time, new_window.lower_point.value });
 
@@ -1012,10 +1012,10 @@ pub const VisibleRegion = struct {
             const z_plus_at_window = z_plus.slope * time_f64 + z_plus.intercept;
             const z_minus_at_window = z_minus.slope * time_f64 + z_minus.intercept;
 
-            std.debug.print("  z_plus at window: {}\n", .{z_plus_at_window});
-            std.debug.print("  z_minus at window: {}\n", .{z_minus_at_window});
-            std.debug.print("  new_window lower: {}\n", .{new_window.lower_point.value});
-            std.debug.print("  new_window upper: {}\n", .{new_window.upper_point.value});
+            // std.debug.print("  z_plus at window: {}\n", .{z_plus_at_window});
+            // std.debug.print("  z_minus at window: {}\n", .{z_minus_at_window});
+            // std.debug.print("  new_window lower: {}\n", .{new_window.lower_point.value});
+            // std.debug.print("  new_window upper: {}\n", .{new_window.upper_point.value});
 
             // Check if visibility constraints are violated
             if (new_window.lower_point.value > z_plus_at_window + 1e-10) {
@@ -1178,6 +1178,7 @@ pub const VisibleRegion = struct {
     }
 
     fn checkForClosure(self: *VisibleRegion, new_window: Window) !void {
+
         // If already closed, nothing to do.
         if (self.is_closed) {
             std.debug.print("Window already closed.", .{});
@@ -1479,7 +1480,7 @@ pub fn isWindowCompletelyRightOf(w1: Window, w2: Window) bool {
 // *****************************************************************************************
 // DEBUGGING CODE
 // *****************************************************************************************
-fn printVisibleRegion(vr: *VisibleRegion) void {
+fn printVisibleRegion(vr: *VisibleRegion) !void {
     std.debug.print("VisibleRegion:\n", .{});
     std.debug.print(
         "  Source Window: ({d}, {d}) -> ({d}, {d})\n",

@@ -1,0 +1,5 @@
+=== DECOMPRESS START ===
+Compressed size: 1 bytes
+Number of knots: 0
+General case: multiple knots
+No knots found, returning empty
