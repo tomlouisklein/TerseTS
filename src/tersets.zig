@@ -38,6 +38,11 @@ pub const Error = error{
     OutOfMemory,
     EmptyConvexHull,
     EmptyQueue,
+    VisibleRegionReachesFinalWindow,
+    InvalidK,
+    NoNextWindow,
+    EmptyInput,
+    InvalidData,
 };
 
 /// The compression methods in TerseTS.

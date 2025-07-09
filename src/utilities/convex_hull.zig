@@ -38,7 +38,7 @@ const tester = @import("../tester.zig");
 /// Enum for the angle's `Turn` of three consecutive points A, B, and C. Essentially, it describes
 /// whether the path from A to B to C makes a `left` turn, a `right` turn, or continues in a
 /// straight line also called collinear.
-const Turn = enum(i8) { right, left, collinear };
+pub const Turn = enum(i8) { right, left, collinear };
 
 /// Enum to determine the hull in the convex hull.
 const HullType = enum(i8) { upperHull, lowerHull };
@@ -403,7 +403,7 @@ pub const ConvexHull = struct {
 /// Compute turn created by the path from `first_point` to `middle_point` to `last_point`. If this
 /// function is part of the structure and does not use the `self` parameter, the compiler returns
 /// an error. However, since it is used for testing purposes it cannot be private.
-fn computeTurn(
+pub fn computeTurn(
     first_point: DiscretePoint,
     middle_point: DiscretePoint,
     last_point: DiscretePoint,
