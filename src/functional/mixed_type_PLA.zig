@@ -22,6 +22,7 @@
 //! by Prof. Ke Yi of Hong Kong University of Science and Technology.
 
 const std = @import("std");
+const stdout = std.io.getStdOut().writer();
 const math = std.math;
 const ArrayList = std.ArrayList;
 const mem = std.mem;
@@ -39,9 +40,15 @@ pub fn compress(
     allocator: mem.Allocator,
     error_bound: f32,
 ) Error!void {
+    std.debug.print("=== COMPRESS START ===\n", .{});
+    std.debug.print("Input length: {}, error_bound: {}\n", .{ uncompressed_values.len, error_bound });
+
     // Apply error bound margin for numerical stability.
     const adjusted_error = error_bound - shared.ErrorBoundMargin;
+    std.debug.print("Adjusted error: {}\n", .{adjusted_error});
+
     if (adjusted_error <= 0) {
+        std.debug.print("ERROR: Adjusted error <= 0\n", .{});
         return Error.UnsupportedErrorBound;
     }
 
@@ -49,18 +56,30 @@ pub fn compress(
     var polygon = try ExtendedPolygon.init(allocator, adjusted_error);
     defer polygon.deinit();
 
+    std.debug.print("Created polygon with {} data points\n", .{polygon.data_points.items.len});
+
     // Add all data points to create the extended polygon.
     for (uncompressed_values, 0..) |value, i| {
         try polygon.addDataPoint(i, value);
     }
 
+    std.debug.print("Added {} data points to polygon\n", .{polygon.data_points.items.len});
+
     // Get all windows that connect the upper and lower chains.
     const windows = try polygon.getAllWindows();
     defer windows.deinit();
 
+    std.debug.print("Generated {} windows\n", .{windows.items.len});
+    for (windows.items, 0..) |window, i| {
+        std.debug.print("Window {}: upper=({}, {}), lower=({}, {})\n", .{ i, window.upper_point.time, window.upper_point.value, window.lower_point.time, window.lower_point.value });
+    }
+
     // Get initial and final windows from the extended polygon.
     const initial_window = polygon.getInitialWindow();
     const final_window = polygon.getFinalWindow();
+
+    std.debug.print("Initial window: upper=({}, {}), lower=({}, {})\n", .{ initial_window.upper_point.time, initial_window.upper_point.value, initial_window.lower_point.time, initial_window.lower_point.value });
+    std.debug.print("Final window: upper=({}, {}), lower=({}, {})\n", .{ final_window.upper_point.time, final_window.upper_point.value, final_window.lower_point.time, final_window.lower_point.value });
 
     // Step 2: Initialize DP arrays.
     var C = ArrayList(Window).init(allocator);
@@ -72,39 +91,56 @@ pub fn compress(
     var initial_vr = try VisibleRegion.init(allocator, initial_window);
     defer initial_vr.deinit();
 
-    // Dear ChatGPT: Give me a function that prints the entire visible region here.
+    std.debug.print("Created initial visible region\n", .{});
 
     // Process windows to find the closing window of the initial window.
-    for (windows.items[1..]) |window| {
+    var found_closing = false;
+    for (windows.items[1..], 1..) |window, i| {
+        std.debug.print("Processing window {} for initial VR\n", .{i});
         try initial_vr.updateWithNewWindow(window);
+
+        std.debug.print("VR is_closed: {}\n", .{initial_vr.is_closed});
+
         if (initial_vr.is_closed) {
             try C.append(initial_vr.closing_window.?);
             try pred.append(null);
+            found_closing = true;
+            std.debug.print("Found closing window at index {}\n", .{i});
             break;
         }
     }
+
     printVisibleRegion(&initial_vr);
 
-    // TODO: Here is the problem. This case is always triggered.
-    if (!initial_vr.is_closed) {
-        std.debug.print("Initial window can see final window directly. \n", .{});
-        // Special case: optimal PLA has 0 segments (direct line)
+    if (!found_closing) {
+        std.debug.print("SPECIAL CASE: Initial window can see final window directly\n", .{});
 
-        std.debug.print("final_window.upper_point.value = {d}.\n", .{final_window.upper_point.value});
-        std.debug.print("final_window.lower_point.value = {d}.\n", .{final_window.lower_point.value});
+        // Try to create direct line from initial to final window
+        if (canReachDirectly(initial_window, final_window)) {
+            std.debug.print("Creating direct line segment\n", .{});
 
-        const segment_slope = (final_window.upper_point.value - initial_window.upper_point.value) /
-            @as(f64, @floatFromInt(final_window.upper_point.time - initial_window.upper_point.time));
-        const segment_intercept = initial_window.upper_point.value -
-            segment_slope * @as(f64, @floatFromInt(initial_window.upper_point.time));
+            const segment_slope = (final_window.upper_point.value - initial_window.upper_point.value) /
+                @as(f64, @floatFromInt(final_window.upper_point.time - initial_window.upper_point.time));
+            const segment_intercept = initial_window.upper_point.value -
+                segment_slope * @as(f64, @floatFromInt(initial_window.upper_point.time));
 
-        try compressed_values.append(1); // Number of segments
-        try compressed_values.appendSlice(std.mem.asBytes(&segment_slope));
-        try compressed_values.appendSlice(std.mem.asBytes(&segment_intercept));
-        const orig_len: usize = uncompressed_values.len;
-        try compressed_values.appendSlice(std.mem.asBytes(&orig_len));
-        return;
+            std.debug.print("Direct segment: slope={}, intercept={}\n", .{ segment_slope, segment_intercept });
+
+            try compressed_values.append(1); // Number of segments
+            try compressed_values.appendSlice(std.mem.asBytes(&segment_slope));
+            try compressed_values.appendSlice(std.mem.asBytes(&segment_intercept));
+            const orig_len: usize = uncompressed_values.len;
+            try compressed_values.appendSlice(std.mem.asBytes(&orig_len));
+
+            std.debug.print("Compressed to {} bytes (direct line)\n", .{compressed_values.items.len});
+            return;
+        } else {
+            std.debug.print("ERROR: Cannot create direct line but VR not closed\n", .{});
+            return Error.InvalidData;
+        }
     }
+
+    std.debug.print("Starting DP with C[0] computed\n", .{});
 
     // Step 3: Maintain list of visible regions for DP frontier
     var visible_regions = ArrayList(VisibleRegion).init(allocator);
@@ -364,17 +400,25 @@ pub fn compress(
         }
         std.debug.print(">>> decompress: segment_count = {d}\n", .{compressed_values.items.len});
     }
+    std.debug.print("=== COMPRESS END ===\n", .{});
 }
 
-/// Decompress `compressed_values` produced by "Mixed-PLA". The function writes the result to
-/// `decompressed_values`. The `allocator` is used for memory allocation of intermediate data
-/// structures. If an error occurs, it is returned.
+// Helper function to check if we can reach directly
+fn canReachDirectly(initial: Window, final: Window) bool {
+    // A very simple check - you might need to make this more sophisticated
+    return initial.upper_point.time < final.upper_point.time;
+}
+
 pub fn decompress(
     compressed_values: []const u8,
     decompressed_values: *ArrayList(f64),
     allocator: mem.Allocator,
 ) Error!void {
+    std.debug.print("=== DECOMPRESS START ===\n", .{});
+    std.debug.print("Compressed size: {} bytes\n", .{compressed_values.len});
+
     if (compressed_values.len < 1) {
+        std.debug.print("ERROR: Compressed data too short\n", .{});
         return Error.InvalidData;
     }
 
@@ -386,56 +430,72 @@ pub fn decompress(
     const num_knots = compressed_values[offset];
     offset += 1;
 
+    std.debug.print("Number of knots: {}\n", .{num_knots});
+
     // Handle special case: direct line (slope, intercept, original_length)
     if (num_knots == 1 and compressed_values.len == 1 + size_f64 + size_f64 + size_usize) {
-        // This is the special case: [1][slope][intercept][original_length]
+        std.debug.print("Special case: direct line\n", .{});
+
         if (offset + 2 * size_f64 + size_usize > compressed_values.len) {
+            std.debug.print("ERROR: Not enough data for direct line\n", .{});
             return Error.InvalidData;
         }
 
         const slope = mem.bytesAsSlice(f64, compressed_values[offset .. offset + size_f64])[0];
         offset += size_f64;
+        std.debug.print("Slope: {}\n", .{slope});
 
         const intercept = mem.bytesAsSlice(f64, compressed_values[offset .. offset + size_f64])[0];
         offset += size_f64;
+        std.debug.print("Intercept: {}\n", .{intercept});
 
-        // Read the stored original length
         const orig_len = mem.bytesAsSlice(usize, compressed_values[offset .. offset + size_usize])[0];
+        std.debug.print("Original length: {}\n", .{orig_len});
 
-        // Use the correct range [0..orig_len].
+        // Generate decompressed values
         for (0..orig_len) |t| {
             const value = slope * @as(f64, @floatFromInt(t)) + intercept;
             try decompressed_values.append(value);
         }
+
+        std.debug.print("Decompressed {} values\n", .{decompressed_values.items.len});
         return;
     }
 
     // Handle general case: multiple knots
+    std.debug.print("General case: multiple knots\n", .{});
+
     var knots = ArrayList(KnotInfo).init(allocator);
     defer knots.deinit();
 
-    for (0..num_knots) |_| {
-        // Read the first field (8 bytes) and determine if it's joint or disjoint based on sign
+    for (0..num_knots) |knot_idx| {
+        std.debug.print("Processing knot {}\n", .{knot_idx});
+
         if (offset + 8 > compressed_values.len) {
+            std.debug.print("ERROR: Not enough data for knot {}\n", .{knot_idx});
             return Error.InvalidData;
         }
 
-        // Read as i64 to check sign, but be prepared to interpret as usize if positive
         const time_raw_bytes = compressed_values[offset .. offset + 8];
         const time_i64 = mem.bytesAsSlice(i64, time_raw_bytes)[0];
         offset += 8;
 
+        std.debug.print("Time raw: {}\n", .{time_i64});
+
         if (time_i64 < 0) {
-            // Disjoint knot: [-x][y1][y2]
+            std.debug.print("Disjoint knot\n", .{});
+
             if (offset + 2 * size_f64 > compressed_values.len) {
+                std.debug.print("ERROR: Not enough data for disjoint knot\n", .{});
                 return Error.InvalidData;
             }
 
             const y1 = mem.bytesAsSlice(f64, compressed_values[offset .. offset + size_f64])[0];
             offset += size_f64;
-
             const y2 = mem.bytesAsSlice(f64, compressed_values[offset .. offset + size_f64])[0];
             offset += size_f64;
+
+            std.debug.print("Disjoint knot: time={}, y1={}, y2={}\n", .{ -time_i64, y1, y2 });
 
             try knots.append(KnotInfo{
                 .time = @as(usize, @intCast(-time_i64)),
@@ -444,16 +504,19 @@ pub fn decompress(
                 .y2 = y2,
             });
         } else {
-            // Joint knot: [x][y] - reinterpret as usize
+            std.debug.print("Joint knot\n", .{});
+
             if (offset + size_f64 > compressed_values.len) {
+                std.debug.print("ERROR: Not enough data for joint knot\n", .{});
                 return Error.InvalidData;
             }
 
             const y = mem.bytesAsSlice(f64, compressed_values[offset .. offset + size_f64])[0];
             offset += size_f64;
 
-            // For joint knots, the time was encoded as usize, so reinterpret the bytes
             const time_usize = mem.bytesAsSlice(usize, time_raw_bytes)[0];
+
+            std.debug.print("Joint knot: time={}, y={}\n", .{ time_usize, y });
 
             try knots.append(KnotInfo{
                 .time = time_usize,
@@ -465,25 +528,38 @@ pub fn decompress(
     }
 
     if (knots.items.len == 0) {
-        return; // No knots, nothing to decompress
+        std.debug.print("No knots found, returning empty\n", .{});
+        return;
     }
 
     // Sort knots by time
-    mem.sort(KnotInfo, knots.items, {}, struct {
+    std.mem.sort(KnotInfo, knots.items, {}, struct {
         pub fn lessThan(context: void, a: KnotInfo, b: KnotInfo) bool {
             _ = context;
             return a.time < b.time;
         }
     }.lessThan);
 
+    std.debug.print("Sorted knots:\n", .{});
+    for (knots.items, 0..) |knot, i| {
+        std.debug.print("  {}: time={}, joint={}, y1={}, y2={}\n", .{ i, knot.time, knot.is_joint, knot.y1, knot.y2 });
+    }
+
     // Determine the time range
     const max_time = knots.items[knots.items.len - 1].time;
+    std.debug.print("Max time: {}\n", .{max_time});
 
-    // Reconstruct the piecewise linear function and evaluate at each time point
+    // Reconstruct the piecewise linear function
     for (0..max_time + 1) |t| {
         const value = evaluatePLAAtTime(knots.items, t);
         try decompressed_values.append(value);
+        if (t < 5 or t > max_time - 5) {
+            std.debug.print("  t={}: value={}\n", .{ t, value });
+        }
     }
+
+    std.debug.print("Decompressed {} values\n", .{decompressed_values.items.len});
+    std.debug.print("=== DECOMPRESS END ===\n", .{});
 }
 
 fn evaluatePLAAtTime(knots: []const KnotInfo, t: usize) f64 {
@@ -902,68 +978,87 @@ pub const VisibleRegion = struct {
         self.lower_boundary_hull.deinit();
     }
 
-    // Process a new window by adding its boundary points
+    // Add debug prints to VisibleRegion.updateWithNewWindow
     pub fn updateWithNewWindow(self: *VisibleRegion, new_window: Window) !void {
-        if (self.is_closed) return;
+        std.debug.print("  VR.updateWithNewWindow: new_window=({},{})->({},{})\n", .{ new_window.upper_point.time, new_window.upper_point.value, new_window.lower_point.time, new_window.lower_point.value });
+
+        if (self.is_closed) {
+            std.debug.print("  VR already closed, returning\n", .{});
+            return;
+        }
 
         // Get the time of the new window
         const window_time = @min(new_window.upper_point.time, new_window.lower_point.time);
+        std.debug.print("  Window time: {}\n", .{window_time});
 
         // Only process windows that are to the right of our source
         const source_time = @max(self.source_window.upper_point.time, self.source_window.lower_point.time);
-        if (window_time <= source_time) return;
+        std.debug.print("  Source time: {}\n", .{source_time});
 
-        // First check if adding this window would violate visibility constraints
+        if (window_time <= source_time) {
+            std.debug.print("  Window not to the right of source, skipping\n", .{});
+            return;
+        }
+
+        // Check visibility constraints
         if (self.z_plus != null and self.z_minus != null) {
             const z_plus = self.z_plus.?;
             const z_minus = self.z_minus.?;
 
-            // Check if the new window's points fall outside the visibility wedge
+            std.debug.print("  z_plus: slope={}, intercept={}\n", .{ z_plus.slope, z_plus.intercept });
+            std.debug.print("  z_minus: slope={}, intercept={}\n", .{ z_minus.slope, z_minus.intercept });
+
             const time_f64 = @as(f64, @floatFromInt(window_time));
-
-            // For z_plus (upper supporting line), check if lower point is above it
             const z_plus_at_window = z_plus.slope * time_f64 + z_plus.intercept;
-            if (new_window.lower_point.value > z_plus_at_window + 1e-10) {
-                // Lower boundary crossed above z_plus - close the region
-                self.is_closed = true;
+            const z_minus_at_window = z_minus.slope * time_f64 + z_minus.intercept;
 
-                // Create closing window at the intersection
+            std.debug.print("  z_plus at window: {}\n", .{z_plus_at_window});
+            std.debug.print("  z_minus at window: {}\n", .{z_minus_at_window});
+            std.debug.print("  new_window lower: {}\n", .{new_window.lower_point.value});
+            std.debug.print("  new_window upper: {}\n", .{new_window.upper_point.value});
+
+            // Check if visibility constraints are violated
+            if (new_window.lower_point.value > z_plus_at_window + 1e-10) {
+                std.debug.print("  Lower boundary crossed above z_plus - closing VR\n", .{});
+                self.is_closed = true;
                 const closing_upper = shared.DiscretePoint{
                     .time = window_time,
                     .value = z_plus_at_window,
                 };
                 self.closing_window = Window{
                     .upper_point = closing_upper,
-                    .lower_point = closing_upper, // Degenerate window at intersection
+                    .lower_point = closing_upper,
                 };
                 return;
             }
 
-            // For z_minus (lower supporting line), check if upper point is below it
-            const z_minus_at_window = z_minus.slope * time_f64 + z_minus.intercept;
             if (new_window.upper_point.value < z_minus_at_window - 1e-10) {
-                // Upper boundary crossed below z_minus - close the region
+                std.debug.print("  Upper boundary crossed below z_minus - closing VR\n", .{});
                 self.is_closed = true;
-
-                // Create closing window at the intersection
                 const closing_lower = shared.DiscretePoint{
                     .time = window_time,
                     .value = z_minus_at_window,
                 };
                 self.closing_window = Window{
                     .upper_point = closing_lower,
-                    .lower_point = closing_lower, // Degenerate window at intersection
+                    .lower_point = closing_lower,
                 };
                 return;
             }
         }
 
-        // If we get here, the window is still visible - add its points to the hulls
+        // Add points to hulls
+        std.debug.print("  Adding points to hulls\n", .{});
         try self.addToUpperBoundary(new_window.upper_point);
         try self.addToLowerBoundary(new_window.lower_point);
 
-        // Update supporting lines after adding new points
+        std.debug.print("  Upper hull size: {}\n", .{self.upper_boundary_hull.items.len});
+        std.debug.print("  Lower hull size: {}\n", .{self.lower_boundary_hull.items.len});
+
+        // Update supporting lines
         try self.updateSupportingLines();
+
+        std.debug.print("  Updated supporting lines\n", .{});
     }
 
     // Reuse the addToHull logic.
