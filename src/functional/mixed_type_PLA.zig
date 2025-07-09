@@ -85,27 +85,6 @@ pub fn compress(
     }
     printVisibleRegion(&initial_vr);
 
-    // TODO: Here is the problem. This case is always triggered.
-    if (!initial_vr.is_closed) {
-        std.debug.print("Initial window can see final window directly. \n", .{});
-        // Special case: optimal PLA has 0 segments (direct line)
-
-        std.debug.print("final_window.upper_point.value = {d}.\n", .{final_window.upper_point.value});
-        std.debug.print("final_window.lower_point.value = {d}.\n", .{final_window.lower_point.value});
-
-        const segment_slope = (final_window.upper_point.value - initial_window.upper_point.value) /
-            @as(f64, @floatFromInt(final_window.upper_point.time - initial_window.upper_point.time));
-        const segment_intercept = initial_window.upper_point.value -
-            segment_slope * @as(f64, @floatFromInt(initial_window.upper_point.time));
-
-        try compressed_values.append(1); // Number of segments
-        try compressed_values.appendSlice(std.mem.asBytes(&segment_slope));
-        try compressed_values.appendSlice(std.mem.asBytes(&segment_intercept));
-        const orig_len: usize = uncompressed_values.len;
-        try compressed_values.appendSlice(std.mem.asBytes(&orig_len));
-        return;
-    }
-
     // Step 3: Maintain list of visible regions for DP frontier
     var visible_regions = ArrayList(VisibleRegion).init(allocator);
     defer {
@@ -265,10 +244,17 @@ pub fn compress(
     defer segments.deinit();
 
     // Start from the final optimal window and trace backwards
-    var current_k = k;
-    var previous_window: ?Window = null;
+    // var current_k = k;
 
-    while (current_k > 0 and current_k < C.items.len and current_k < pred.items.len) {
+    // Start from the last valid index in C.items, not from k. After your DP, you know that the optimal “last window” is at index C.items.len-1
+    std.debug.print("C.items.len is {d}\n", .{C.items.len});
+    std.debug.print("pred.items.len is {d}\n", .{pred.items.len});
+    var current_k: usize = C.items.len - 1;
+    var previous_window: ?Window = null;
+    std.debug.print("Current k is {d}\n", .{current_k});
+
+    while (current_k > 0) {
+        // while (current_k > 0 and current_k < C.items.len and current_k < pred.items.len) {
         const current_window = C.items[current_k];
 
         if (pred.items[current_k]) |prev_k| {
@@ -324,6 +310,15 @@ pub fn compress(
                     try segments.append(left_segment);
                     try segments.append(right_segment);
                 }
+                // This tries to cover the case, where only one segment connects the windows.
+                // Not sure if this works.
+            } else if (current_k == prev_k + 1) {
+                // Joint knot (one-step)
+                const knot_time = current_window.upper_point.time;
+                const knot_y = current_window.upper_point.value;
+                try knots.append(KnotInfo{ .time = knot_time, .is_joint = true, .y1 = knot_y, .y2 = knot_y });
+                const segment = computeLine(prev_window.upper_point, current_window.upper_point);
+                try segments.append(segment);
             }
 
             previous_window = current_window;
@@ -336,6 +331,29 @@ pub fn compress(
     // Reverse to get correct order
     mem.reverse(KnotInfo, knots.items);
     mem.reverse(shared.LinearFunction, segments.items);
+
+    // Include the endpoints as knots to guarantee the full range is covered.
+    // Include the starting point as a knot.
+    if (knots.items[0].time > 0) {
+        std.debug.print("Include the starting point as a knot.", .{});
+        try knots.insert(0, (KnotInfo{
+            .time = initial_window.upper_point.time,
+            .is_joint = true,
+            .y1 = initial_window.upper_point.value,
+            .y2 = initial_window.upper_point.value,
+        }));
+    }
+
+    if (knots.items[knots.items.len - 1].time < compressed_values.items.len) {
+        // Include the last point as a knot.
+        std.debug.print("Include the last point as a knot.", .{});
+        try knots.append(KnotInfo{
+            .time = final_window.upper_point.time,
+            .is_joint = true,
+            .y1 = final_window.upper_point.value,
+            .y2 = final_window.upper_point.value,
+        });
+    }
 
     // Step 6: Encode the result into compressed_values
     // Format: [num_knots][knot_data...]
@@ -362,8 +380,8 @@ pub fn compress(
             try compressed_values.appendSlice(y1_bytes);
             try compressed_values.appendSlice(y2_bytes);
         }
-        std.debug.print(">>> decompress: segment_count = {d}\n", .{compressed_values.items.len});
     }
+    std.debug.print(">>> decompress: segment_count = {d}\n", .{compressed_values.items.len});
 }
 
 /// Decompress `compressed_values` produced by "Mixed-PLA". The function writes the result to
@@ -886,6 +904,7 @@ pub const VisibleRegion = struct {
                 .slope = std.math.inf(f64),
                 .intercept = @as(f64, @floatFromInt(window.upper_point.time)),
             };
+
             result.z_plus = vertical_line;
             result.z_minus = vertical_line;
             result.l_plus = window.lower_point;
