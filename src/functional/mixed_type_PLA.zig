@@ -896,23 +896,6 @@ pub const VisibleRegion = struct {
         // The upper endpoint goes to upper hull, lower endpoint to lower hull
         try result.upper_boundary_hull.append(window.upper_point);
         try result.lower_boundary_hull.append(window.lower_point);
-
-        // Initialize supporting lines if both endpoints are at the same x-coordinate
-        if (window.upper_point.time == window.lower_point.time) {
-            // For a vertical window, initialize with a vertical supporting line
-            const vertical_line = shared.LinearFunction{
-                .slope = std.math.inf(f64),
-                .intercept = @as(f64, @floatFromInt(window.upper_point.time)),
-            };
-
-            result.z_plus = vertical_line;
-            result.z_minus = vertical_line;
-            result.l_plus = window.lower_point;
-            result.r_plus = window.upper_point;
-            result.l_minus = window.upper_point;
-            result.r_minus = window.lower_point;
-        }
-
         return result;
     }
 

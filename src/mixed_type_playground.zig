@@ -10,20 +10,6 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Example 1: Simple linear data with some noise
-    print("=== Example 1: Linear data with noise ===\n", .{});
-    var linear_data = ArrayList(f64).init(allocator);
-    defer linear_data.deinit();
-
-    // Generate y = 2x + 1 with some noise
-    for (0..20) |i| {
-        const x: f64 = @as(f64, @floatFromInt(i));
-        const noise = (@as(f64, @floatFromInt(i % 3)) - 1.0) * 0.05; // Small noise
-        try linear_data.append(2.0 * x + 1.0 + noise);
-    }
-
-    try testCompressionDecompression(allocator, linear_data.items, 0.1, "Linear with noise");
-
     // Example 2: Sine wave (should be harder to compress)
     print("\n=== Example 2: Sine wave ===\n", .{});
     var sine_data = ArrayList(f64).init(allocator);
@@ -47,6 +33,20 @@ pub fn main() !void {
     }
 
     try testCompressionDecompression(allocator, step_data.items, 0.05, "Step function");
+
+    // Example 1: Simple linear data with some noise
+    print("=== Example 1: Linear data with noise ===\n", .{});
+    var linear_data = ArrayList(f64).init(allocator);
+    defer linear_data.deinit();
+
+    // Generate y = 2x + 1 with some noise
+    for (0..20) |i| {
+        const x: f64 = @as(f64, @floatFromInt(i));
+        const noise = (@as(f64, @floatFromInt(i % 3)) - 1.0) * 0.05; // Small noise
+        try linear_data.append(2.0 * x + 1.0 + noise);
+    }
+
+    try testCompressionDecompression(allocator, linear_data.items, 0.1, "Linear with noise");
 
     // Example 4: Data with trend
     print("\n=== Example 4: Data with trend ===\n", .{});
