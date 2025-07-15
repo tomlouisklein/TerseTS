@@ -46,9 +46,22 @@ pub fn compress(
     // Finalize the fitting to get the complete solution.
     try mixed_pla.closeFitting();
 
+    // Debug: Check what segments were generated
+    std.debug.print("\n=== Compression Debug ===\n", .{});
+    std.debug.print("Number of segments: {}\n", .{mixed_pla.segments.items.len});
+    std.debug.print("Number of knot flags: {}\n", .{mixed_pla.knot_flags.items.len});
+
+    for (mixed_pla.segments.items, 0..) |seg, i| {
+        std.debug.print("Segment[{}]: time={}, value={:.3}\n", .{ i, seg.time, seg.value });
+    }
+
     // Convert the internal representation to the output format.
     // The mixed_pla.segments contains all segment endpoints.
     // The mixed_pla.knot_flags indicates whether knots are joint (true) or disjoint (false).
+
+    if (mixed_pla.segments.items.len < 2) {
+        return Error.InvalidData;
+    }
 
     // Count the number of knots (excluding the first and last points).
     const num_knots = mixed_pla.knot_flags.items.len;
@@ -65,7 +78,8 @@ pub fn compress(
         const intercept = first.value - slope * @as(f64, @floatFromInt(first.time));
 
         // Special encoding for single segment: [1][slope][intercept][original_length].
-        try compressed_values.append(1);
+        const one: usize = 1;
+        try compressed_values.appendSlice(std.mem.asBytes(&one));
         try compressed_values.appendSlice(std.mem.asBytes(&slope));
         try compressed_values.appendSlice(std.mem.asBytes(&intercept));
         const orig_len = uncompressed_values.len;
@@ -73,26 +87,38 @@ pub fn compress(
         return;
     }
 
-    // Write number of knots as first byte.
-    try compressed_values.appendSlice(std.mem.asBytes(&num_knots));
+    // Multi-segment case: write number of knots + 1 (for the starting point).
+    const total_knots = num_knots + 1; // +1 for the starting point
+    try compressed_values.appendSlice(std.mem.asBytes(&total_knots));
 
-    // Process segments and knots.
-    var segment_idx: usize = 0;
+    // IMPORTANT: First, store the starting point of the first segment.
+    const first_start_point = mixed_pla.segments.items[0];
+    const start_x = @as(i64, @intCast(first_start_point.time));
+    const start_y = first_start_point.value;
 
-    // Skip the first point (it's implied as the start).
-    if (mixed_pla.segments.items.len > 0) {
-        segment_idx = 1;
-    }
+    // Store starting point as a regular joint knot (positive x).
+    try compressed_values.appendSlice(std.mem.asBytes(&start_x));
+    try compressed_values.appendSlice(std.mem.asBytes(&start_y));
+
+    std.debug.print("\nStored starting point: time={}, value={:.3}\n", .{ start_x, start_y });
+
+    // Now process the actual knots.
+    var segment_idx: usize = 1; // Start from index 1 since 0 is the start point
 
     // Write each knot.
     for (mixed_pla.knot_flags.items, 0..) |is_joint, knot_idx| {
-        _ = knot_idx;
+        std.debug.print("\nProcessing knot {}: joint={}, segment_idx={}\n", .{ knot_idx, is_joint, segment_idx });
 
-        if (segment_idx >= mixed_pla.segments.items.len) break;
+        if (segment_idx >= mixed_pla.segments.items.len) {
+            std.debug.print("ERROR: segment_idx out of bounds!\n", .{});
+            break;
+        }
 
         if (is_joint) {
             // Joint knot: the segment endpoint is shared.
             const point = mixed_pla.segments.items[segment_idx];
+            std.debug.print("  Joint knot: time={}, value={:.3}\n", .{ point.time, point.value });
+
             const x = @as(i64, @intCast(point.time));
             const y = point.value;
 
@@ -110,6 +136,8 @@ pub fn compress(
                 mixed_pla.segments.items[segment_idx]
             else
                 end_point; // Fallback for safety.
+
+            std.debug.print("  Disjoint knot: end=({}, {:.3}), start=({}, {:.3})\n", .{ end_point.time, end_point.value, start_point.time, start_point.value });
 
             // Store as negative x for disjoint knot.
             const x = -@as(i64, @intCast(end_point.time));
@@ -140,11 +168,11 @@ pub fn decompress(
     const size_usize = @sizeOf(usize);
 
     // Read number of knots as usize.
-    const num_knots = mem.bytesAsSlice(usize, compressed_values[offset .. offset + size_usize])[0];
+    const total_knots = mem.bytesAsSlice(usize, compressed_values[offset .. offset + size_usize])[0];
     offset += size_usize;
 
     // Handle special case: direct line (slope, intercept, original_length).
-    if (num_knots == 1 and compressed_values.len == size_usize + size_f64 + size_f64 + size_usize) {
+    if (total_knots == 1 and compressed_values.len == size_usize + size_f64 + size_f64 + size_usize) {
         // This is the special case: [1][slope][intercept][original_length].
         if (offset + 2 * size_f64 + size_usize > compressed_values.len) {
             return Error.InvalidData;
@@ -168,11 +196,36 @@ pub fn decompress(
     }
 
     // Handle general case: multiple knots.
+    // The first "knot" is actually the starting point.
+    var start_time: usize = 0;
+    var start_value: f64 = 0.0;
+
+    // Read the starting point (stored as first "knot").
+    if (total_knots > 0) {
+        if (offset + size_i64 + size_f64 > compressed_values.len) {
+            return Error.InvalidData;
+        }
+
+        const start_x = mem.bytesAsSlice(i64, compressed_values[offset .. offset + size_i64])[0];
+        offset += size_i64;
+
+        const start_y = mem.bytesAsSlice(f64, compressed_values[offset .. offset + size_f64])[0];
+        offset += size_f64;
+
+        start_time = @as(usize, @intCast(start_x));
+        start_value = start_y;
+
+        std.debug.print("Read starting point: time={}, value={:.3}\n", .{ start_time, start_value });
+    }
+
+    // Now read the actual knots (total_knots - 1).
     var knots = ArrayList(KnotInfo).init(allocator);
     defer knots.deinit();
 
-    // Read all knots.
-    for (0..num_knots) |_| {
+    const actual_knots = if (total_knots > 0) total_knots - 1 else 0;
+
+    // Read all actual knots.
+    for (0..actual_knots) |_| {
         // Read the x coordinate as i64 to check sign.
         if (offset + size_i64 > compressed_values.len) {
             return Error.InvalidData;
@@ -217,53 +270,35 @@ pub fn decompress(
         }
     }
 
-    if (knots.items.len == 0) {
-        return; // No knots, nothing to decompress.
+    // Sort knots by time (should already be sorted, but ensure correctness).
+    if (knots.items.len > 0) {
+        mem.sort(KnotInfo, knots.items, {}, struct {
+            pub fn lessThan(context: void, a: KnotInfo, b: KnotInfo) bool {
+                _ = context;
+                return a.time < b.time;
+            }
+        }.lessThan);
     }
 
-    // Sort knots by time (should already be sorted, but ensure correctness).
-    mem.sort(KnotInfo, knots.items, {}, struct {
-        pub fn lessThan(context: void, a: KnotInfo, b: KnotInfo) bool {
-            _ = context;
-            return a.time < b.time;
-        }
-    }.lessThan);
-
     // Determine the time range.
-    const first_time: usize = 0; // Always start from time 0.
-    const last_time = knots.items[knots.items.len - 1].time;
+    const first_time = start_time; // Use the actual starting time
+    const last_time = if (knots.items.len > 0)
+        knots.items[knots.items.len - 1].time
+    else
+        start_time; // Single point case
 
     // Build the complete piecewise linear function.
-    // We need to handle the implicit first point at time 0.
     var segments = ArrayList(SegmentInfo).init(allocator);
     defer segments.deinit();
 
-    // Create segments from knots.
-    var prev_time: usize = 0;
-    var prev_value: f64 = 0.0; // Will be computed from first segment.
-
-    // First segment: from start to first knot.
-    if (knots.items.len > 0) {
-        const first_knot = knots.items[0];
-
-        // For the first segment, we need to extrapolate backwards to find the value at time 0.
-        if (knots.items.len > 1) {
-            const second_knot = knots.items[1];
-            const dt = @as(f64, @floatFromInt(second_knot.time - first_knot.time));
-            if (dt > 0) {
-                const slope = (second_knot.y1 - first_knot.y1) / dt;
-                prev_value = first_knot.y1 - slope * @as(f64, @floatFromInt(first_knot.time));
-            } else {
-                prev_value = first_knot.y1;
-            }
-        } else {
-            // Only one knot - assume horizontal line before it.
-            prev_value = first_knot.y1;
-        }
-    }
+    // Start from the given starting point.
+    var prev_time = start_time;
+    var prev_value = start_value;
 
     // Process each knot to create segments.
     for (knots.items) |knot| {
+        std.debug.print("\nProcessing knot at time {}: joint={}, y1={:.3}, y2={:.3}\n", .{ knot.time, knot.is_joint, knot.y1, knot.y2 });
+
         if (knot.is_joint) {
             // Joint knot: create segment from prev to this knot.
             try segments.append(SegmentInfo{
@@ -291,21 +326,24 @@ pub fn decompress(
 
     // Add final segment if needed (from last knot to end of data).
     if (prev_time < last_time) {
-        // Extrapolate using the slope of the last segment.
-        if (segments.items.len > 0) {
-            const last_seg = segments.items[segments.items.len - 1];
-            const dt = @as(f64, @floatFromInt(last_seg.end_time - last_seg.start_time));
-            if (dt > 0) {
-                const slope = (last_seg.end_value - last_seg.start_value) / dt;
-                const end_value = prev_value + slope * @as(f64, @floatFromInt(last_time - prev_time));
-                try segments.append(SegmentInfo{
-                    .start_time = prev_time,
-                    .start_value = prev_value,
-                    .end_time = last_time,
-                    .end_value = end_value,
-                });
-            }
-        }
+        // This shouldn't happen with proper compression, but handle it gracefully.
+        // Create a horizontal line to the end.
+        try segments.append(SegmentInfo{
+            .start_time = prev_time,
+            .start_value = prev_value,
+            .end_time = last_time,
+            .end_value = prev_value,
+        });
+    }
+
+    // If we have no segments (single point), create a dummy segment.
+    if (segments.items.len == 0 and total_knots > 0) {
+        try segments.append(SegmentInfo{
+            .start_time = start_time,
+            .start_value = start_value,
+            .end_time = start_time,
+            .end_value = start_value,
+        });
     }
 
     // Reconstruct values by evaluating the piecewise linear function.
@@ -320,15 +358,20 @@ pub fn decompress(
         }
 
         if (current_segment_idx >= segments.items.len) {
-            // Beyond last segment - extrapolate.
-            const last_seg = segments.items[segments.items.len - 1];
-            const dt = @as(f64, @floatFromInt(last_seg.end_time - last_seg.start_time));
-            if (dt > 0) {
-                const slope = (last_seg.end_value - last_seg.start_value) / dt;
-                const value = last_seg.end_value + slope * @as(f64, @floatFromInt(t - last_seg.end_time));
-                try decompressed_values.append(value);
+            // Beyond last segment - extrapolate using the last segment's slope.
+            if (segments.items.len > 0) {
+                const last_seg = segments.items[segments.items.len - 1];
+                const dt = @as(f64, @floatFromInt(last_seg.end_time - last_seg.start_time));
+                if (dt > 0) {
+                    const slope = (last_seg.end_value - last_seg.start_value) / dt;
+                    const value = last_seg.end_value + slope * @as(f64, @floatFromInt(t - last_seg.end_time));
+                    try decompressed_values.append(value);
+                } else {
+                    try decompressed_values.append(last_seg.end_value);
+                }
             } else {
-                try decompressed_values.append(last_seg.end_value);
+                // No segments at all - shouldn't happen
+                try decompressed_values.append(0.0);
             }
         } else {
             const seg = segments.items[current_segment_idx];
@@ -1500,6 +1543,8 @@ pub const MixedContApr = struct {
             ck3.end_point = self.base[win].end_point;
             ck3.fw = self.base[win].fw;
 
+            std.debug.print("Creating Ck3[k={}]: last_knot=({}, {:.3}), end_point=({}, {:.3})\n", .{ ck3.k, ck3.last_knot.time, ck3.last_knot.value, ck3.end_point.time, ck3.end_point.value });
+
             return ck3;
         }
     }
@@ -1658,6 +1703,7 @@ pub const MixedContApr = struct {
         defer points.deinit();
 
         while (true) {
+            std.debug.print("Ck[k={}]: knot_type={}, last_knot=({}, {:.3}), end_point=({}, {:.3})\n", .{ ck.k, ck.knot_type, ck.last_knot.time, ck.last_knot.value, ck.end_point.time, ck.end_point.value });
             ck.decRef();
 
             if (flags.items.len == 0 or !flags.items[flags.items.len - 1]) {
