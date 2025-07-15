@@ -3,12 +3,27 @@ const ArrayList = std.ArrayList;
 const print = std.debug.print;
 
 // Import the mixed_type_pla module - adjust path as needed
-const mixed_type_pla = @import("./functional/mixed_type_PLA.zig");
+const mixed_type_pla = @import("./functional/mixed_PLA_cpp_version.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+
+    // Example 4: Data with trend
+    print("\n=== Example 4: Data with trend ===\n", .{});
+    var trend_data = ArrayList(f64).init(allocator);
+    defer trend_data.deinit();
+
+    for (0..50) |i| {
+        const x: f64 = @as(f64, @floatFromInt(i));
+        const trend = x * 0.5;
+        const seasonal = 3.0 * @sin(x * 0.3);
+        const noise = (@as(f64, @floatFromInt(i % 5)) - 2.0) * 0.1;
+        try trend_data.append(trend + seasonal + noise);
+    }
+
+    try testCompressionDecompression(allocator, trend_data.items, 0.2, "Data with trend");
 
     // Example 2: Sine wave (should be harder to compress)
     print("\n=== Example 2: Sine wave ===\n", .{});
@@ -47,21 +62,6 @@ pub fn main() !void {
     }
 
     try testCompressionDecompression(allocator, linear_data.items, 0.1, "Linear with noise");
-
-    // Example 4: Data with trend
-    print("\n=== Example 4: Data with trend ===\n", .{});
-    var trend_data = ArrayList(f64).init(allocator);
-    defer trend_data.deinit();
-
-    for (0..50) |i| {
-        const x: f64 = @as(f64, @floatFromInt(i));
-        const trend = x * 0.5;
-        const seasonal = 3.0 * @sin(x * 0.3);
-        const noise = (@as(f64, @floatFromInt(i % 5)) - 2.0) * 0.1;
-        try trend_data.append(trend + seasonal + noise);
-    }
-
-    try testCompressionDecompression(allocator, trend_data.items, 0.2, "Data with trend");
 
     // Example 5: Piecewise linear segments
     print("\n=== Example 5: Piecewise linear segments ===\n", .{});
@@ -117,7 +117,12 @@ pub fn main() !void {
         try mixed_knot_data.append(11.5 + @as(f64, @floatFromInt(i - 15)) * 0.8);
     }
 
-    try testCompressionDecompression(allocator, mixed_knot_data.items, 0.1, "Mixed knot showcase");
+    try testCompressionDecompression(
+        allocator,
+        mixed_knot_data.items,
+        0.1,
+        "Mixed knot showcase",
+    );
 
     // Example 9: Zigzag pattern
     print("\n=== Example 9: Zigzag pattern ===\n", .{});
@@ -129,7 +134,12 @@ pub fn main() !void {
         try zigzag_data.append(value);
     }
 
-    try testCompressionDecompression(allocator, zigzag_data.items, 0.15, "Zigzag pattern");
+    try testCompressionDecompression(
+        allocator,
+        zigzag_data.items,
+        0.15,
+        "Zigzag pattern",
+    );
 }
 
 fn testCompressionDecompression(

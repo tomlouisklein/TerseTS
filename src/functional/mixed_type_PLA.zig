@@ -72,8 +72,6 @@ pub fn compress(
     var initial_vr = try VisibleRegion.init(allocator, initial_window);
     defer initial_vr.deinit();
 
-    // Dear ChatGPT: Give me a function that prints the entire visible region here.
-
     // Process windows to find the closing window of the initial window.
     for (windows.items[1..]) |window| {
         try initial_vr.updateWithNewWindow(window);
@@ -83,6 +81,10 @@ pub fn compress(
             break;
         }
     }
+    if (!initial_vr.is_closed) {
+        std.debug.print("We could not find a closing window for the initial window.\n", .{});
+    }
+
     printVisibleRegion(&initial_vr);
 
     // Step 3: Maintain list of visible regions for DP frontier
@@ -904,70 +906,52 @@ pub const VisibleRegion = struct {
         self.lower_boundary_hull.deinit();
     }
 
-    // Process a new window by adding its boundary points
+    // Process a new window by adding its boundary points.
     pub fn updateWithNewWindow(self: *VisibleRegion, new_window: Window) !void {
+        std.debug.print("Processing a new window by adding its boundary points.\n", .{});
         if (self.is_closed) return;
 
-        // Get the time of the new window
+        // Get the time of the new window.
         const window_time = @min(new_window.upper_point.time, new_window.lower_point.time);
 
-        // Only process windows that are to the right of our source
+        // Only process windows that are to the right of our source.
         const source_time = @max(self.source_window.upper_point.time, self.source_window.lower_point.time);
         if (window_time <= source_time) return;
 
-        // First check if adding this window would violate visibility constraints
-        if (self.z_plus != null and self.z_minus != null) {
-            const z_plus = self.z_plus.?;
-            const z_minus = self.z_minus.?;
+        // According to the paper, we:
+        // 1. Update the convex hull first.
+        // 2. Check for closure based on the new point's position relative to supporting lines.
+        // 3. Update supporting lines if not closed.
 
-            // Check if the new window's points fall outside the visibility wedge
-            const time_f64 = @as(f64, @floatFromInt(window_time));
+        // Save whether we had valid supporting lines before updating hulls.
+        const had_supporting_lines = self.z_plus != null and self.z_minus != null;
 
-            // For z_plus (upper supporting line), check if lower point is above it
-            const z_plus_at_window = z_plus.slope * time_f64 + z_plus.intercept;
-            if (new_window.lower_point.value > z_plus_at_window + 1e-10) {
-                // Lower boundary crossed above z_plus - close the region
-                self.is_closed = true;
+        // Add points to hulls first.
+        const upper_hull_size_before = self.upper_boundary_hull.items.len;
+        const lower_hull_size_before = self.lower_boundary_hull.items.len;
 
-                // Create closing window at the intersection
-                const closing_upper = shared.DiscretePoint{
-                    .time = window_time,
-                    .value = z_plus_at_window,
-                };
-                self.closing_window = Window{
-                    .upper_point = closing_upper,
-                    .lower_point = closing_upper, // Degenerate window at intersection
-                };
-                return;
-            }
-
-            // For z_minus (lower supporting line), check if upper point is below it
-            const z_minus_at_window = z_minus.slope * time_f64 + z_minus.intercept;
-            if (new_window.upper_point.value < z_minus_at_window - 1e-10) {
-                // Upper boundary crossed below z_minus - close the region
-                self.is_closed = true;
-
-                // Create closing window at the intersection
-                const closing_lower = shared.DiscretePoint{
-                    .time = window_time,
-                    .value = z_minus_at_window,
-                };
-                self.closing_window = Window{
-                    .upper_point = closing_lower,
-                    .lower_point = closing_lower, // Degenerate window at intersection
-                };
-                return;
-            }
-        }
-
-        // If we get here, the window is still visible - add its points to the hulls
         try self.addToUpperBoundary(new_window.upper_point);
         try self.addToLowerBoundary(new_window.lower_point);
 
-        // Update supporting lines after adding new points
-        try self.updateSupportingLines();
-    }
+        // We need at least 2 points in at least one hull to have meaningful supporting lines.
+        const can_have_supporting_lines = self.upper_boundary_hull.items.len >= 2 or self.lower_boundary_hull.items.len >= 2;
 
+        // Check for closure only if we had supporting lines before this update.
+        if (had_supporting_lines and !self.is_closed) {
+            // Only check if the new window actually added new points to the hulls.
+            if (self.upper_boundary_hull.items.len > upper_hull_size_before or
+                self.lower_boundary_hull.items.len > lower_hull_size_before)
+            {
+                std.debug.print("Now we are checking for closure\n", .{});
+                try self.checkForClosure(new_window);
+            }
+        }
+
+        // Update supporting lines if not closed and we have enough points
+        if (!self.is_closed and can_have_supporting_lines) {
+            try self.updateSupportingLines();
+        }
+    }
     // Adapt the addToHull function for upper boundary.
     fn addToUpperBoundary(self: *VisibleRegion, point: shared.DiscretePoint) !void {
         // For upper boundary, we maintain LOWER convexity (turns right).
@@ -1018,29 +1002,29 @@ pub const VisibleRegion = struct {
         var min_lower_idx: usize = 0;
 
         // Try all combinations of points from upper and lower hulls
-        for (self.upper_boundary_hull.items, 0..) |upper_point, u_idx| {
-            for (self.lower_boundary_hull.items, 0..) |lower_point, l_idx| {
+        for (self.upper_boundary_hull.items, 0..) |upper_point, upper_index| {
+            for (self.lower_boundary_hull.items, 0..) |lower_point, lower_index| {
                 // Skip if points are at the same x-coordinate (would create vertical line)
                 if (upper_point.time == lower_point.time) continue;
 
                 const line = computeLine(upper_point, lower_point);
 
-                // Check if this line validly separates the hulls
+                // Check if this line validly separates the hulls.
                 if (self.isValidSeparatingLine(line)) {
-                    // Update max slope line
+                    // Update max slope line.
                     if (line.slope > max_slope) {
                         max_slope = line.slope;
                         max_slope_line = line;
-                        max_upper_idx = u_idx;
-                        max_lower_idx = l_idx;
+                        max_upper_idx = upper_index;
+                        max_lower_idx = lower_index;
                     }
 
-                    // Update min slope line
+                    // Update min slope line.
                     if (line.slope < min_slope) {
                         min_slope = line.slope;
                         min_slope_line = line;
-                        min_upper_idx = u_idx;
-                        min_lower_idx = l_idx;
+                        min_upper_idx = upper_index;
+                        min_lower_idx = lower_index;
                     }
                 }
             }
@@ -1050,27 +1034,15 @@ pub const VisibleRegion = struct {
         if (max_slope_line) |line| {
             self.z_plus = line;
             self.r_plus = self.upper_boundary_hull.items[max_upper_idx];
-            self.l_plus = self.lower_boundary_hull.items[max_lower_idx];
+            self.l_minus = self.lower_boundary_hull.items[max_lower_idx];
         }
 
         // Update z- (min slope)
         if (min_slope_line) |line| {
             self.z_minus = line;
-            self.l_minus = self.upper_boundary_hull.items[min_upper_idx];
-            self.r_minus = self.lower_boundary_hull.items[min_lower_idx];
+            self.l_plus = self.upper_boundary_hull.items[min_upper_idx]; // Fixed: was l_minus
+            self.r_minus = self.lower_boundary_hull.items[min_lower_idx]; // Fixed: was r_plus
         }
-    }
-
-    // Find the supporting line with maximum slope (z+).
-    fn findMaxSlopeSupportingLine(self: *VisibleRegion) !void {
-        // This function is now replaced by the logic in updateSupportingLines
-        try self.updateSupportingLines();
-    }
-
-    // Find the supporting line with minimum slope (z-).
-    fn findMinSlopeSupportingLine(self: *VisibleRegion) !void {
-        // This function is now replaced by the logic in updateSupportingLines
-        try self.updateSupportingLines();
     }
 
     // Check if a line validly separates the two hulls.
@@ -1100,71 +1072,60 @@ pub const VisibleRegion = struct {
         return true;
     }
 
+    // Check for closure after updating the convex hulls
     fn checkForClosure(self: *VisibleRegion, new_window: Window) !void {
-        // If already closed, nothing to do.
-        if (self.is_closed) {
-            std.debug.print("Window already closed.", .{});
-            return;
-        }
-        // Need supporting lines to check for closure.
-        if (self.z_plus == null or self.z_minus == null) {
-            std.debug.print("We don't have both supporting lines.", .{});
-            return;
-        }
+        // According to the paper, we check if the new vertical segment crosses the supporting lines
 
         const z_plus = self.z_plus.?;
         const z_minus = self.z_minus.?;
+        const epsilon = 1e-10;
 
-        // Case 3 from the paper: Check if the new window crosses outside the visible wedge.
-        // Check upper point against z_minus (Case 3 for upper chain).
-        const upper_z_minus_value = z_minus.slope * @as(f64, @floatFromInt(
-            new_window.upper_point.time,
-        )) + z_minus.intercept;
-        const upper_below_z_minus = new_window.upper_point.value < upper_z_minus_value - 1e-10;
+        // Check the upper point (v in the paper)
+        const upper_point = new_window.upper_point;
+        const upper_z_minus_value = z_minus.slope * @as(f64, @floatFromInt(upper_point.time)) + z_minus.intercept;
 
-        // Check lower point against z_plus (Case 3 for lower chain).
-        const lower_z_plus_value = z_plus.slope * @as(f64, @floatFromInt(
-            new_window.lower_point.time,
-        )) + z_plus.intercept;
-        const lower_above_z_plus = new_window.lower_point.value > lower_z_plus_value + 1e-10;
-
-        // If either point crosses outside the wedge, close the visible region.
-        if (upper_below_z_minus or lower_above_z_plus) {
+        // Case 3 for upper chain: if v is below z-
+        if (upper_point.value < upper_z_minus_value - epsilon) {
             self.is_closed = true;
 
-            std.debug.print("Either point crosses outside the wedge, close the visible region.", .{});
+            // Compute the crossing point q between z- and the vertical segment
+            const intersection_point = shared.DiscretePoint{
+                .time = upper_point.time,
+                .value = upper_z_minus_value,
+            };
 
-            if (upper_below_z_minus and self.r_minus != null) {
-                // Upper boundary crossed z_minus.
-                // Closing window connects r_minus (on lower hull) to intersection point.
-                const intersection_value = z_minus.slope * @as(f64, @floatFromInt(
-                    new_window.upper_point.time,
-                )) + z_minus.intercept;
-                const intersection_point = shared.DiscretePoint{
-                    .time = new_window.upper_point.time,
-                    .value = intersection_value,
-                };
+            // Set closing window to r-q
+            if (self.r_minus) |r_minus| {
                 self.closing_window = Window{
                     .upper_point = intersection_point,
-                    .lower_point = self.r_minus.?,
+                    .lower_point = r_minus,
                 };
-                std.debug.print("Closing window connects r_minus (on lower hull) to intersection point.\n .", .{});
-            } else if (lower_above_z_plus and self.r_plus != null) {
-                // Lower boundary crossed z_plus.
-                // Closing window connects r_plus (on upper hull) to intersection point.
-                const intersection_value = z_plus.slope * @as(f64, @floatFromInt(
-                    new_window.lower_point.time,
-                )) + z_plus.intercept;
-                const intersection_point = shared.DiscretePoint{
-                    .time = new_window.lower_point.time,
-                    .value = intersection_value,
-                };
+            }
+            return;
+        }
+
+        // Check the lower point (symmetric case)
+        const lower_point = new_window.lower_point;
+        const lower_z_plus_value = z_plus.slope * @as(f64, @floatFromInt(lower_point.time)) + z_plus.intercept;
+
+        // Case 3 for lower chain: if u is above z+
+        if (lower_point.value > lower_z_plus_value + epsilon) {
+            self.is_closed = true;
+
+            // Compute the crossing point q between z+ and the vertical segment
+            const intersection_point = shared.DiscretePoint{
+                .time = lower_point.time,
+                .value = lower_z_plus_value,
+            };
+
+            // Set closing window to r+q
+            if (self.r_plus) |r_plus| {
                 self.closing_window = Window{
-                    .upper_point = self.r_plus.?,
+                    .upper_point = r_plus,
                     .lower_point = intersection_point,
                 };
-                std.debug.print("Closing window connects r_plus (on upper hull) to intersection point.\n .", .{});
             }
+            return;
         }
     }
 };

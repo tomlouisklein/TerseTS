@@ -77,6 +77,7 @@ pub const Error = error{
     NotDir,
     FileLocksNotSupported,
     FileBusy,
+    ParallelLines,
 };
 
 /// The compression methods in TerseTS.
