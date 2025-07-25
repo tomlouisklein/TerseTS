@@ -576,8 +576,7 @@ fn evaluatePLAAtTime(knots: []const KnotInfo, t: usize) f64 {
 
 // ****************************************************************************************
 
-// Structure to represent the extended polygon
-// Structure to represent the extended polygon
+// Structure to represent the extended polygon.
 const ExtendedPolygon = struct {
     data_points: ArrayList(shared.DiscretePoint), // Original data points
     allocator: mem.Allocator,

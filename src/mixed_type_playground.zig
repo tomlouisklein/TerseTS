@@ -3,12 +3,46 @@ const ArrayList = std.ArrayList;
 const print = std.debug.print;
 
 // Import the mixed_type_pla module - adjust path as needed
-const mixed_type_pla = @import("./functional/mixed_PLA_cpp_version.zig");
+const mixed_type_pla = @import("./functional/mixed_type_PLA.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+
+    // Example 8: Mixed knot showcase
+    print("\n=== Example 8: Mixed knot showcase ===\n", .{});
+    var mixed_knot_data = ArrayList(f64).init(allocator);
+    defer mixed_knot_data.deinit();
+
+    for (0..10) |i| {
+        try mixed_knot_data.append(@as(f64, @floatFromInt(i)) * 0.5);
+    }
+    for (10..15) |i| {
+        try mixed_knot_data.append(10.0 + @as(f64, @floatFromInt(i - 10)) * 0.3);
+    }
+    for (15..25) |i| {
+        try mixed_knot_data.append(11.5 + @as(f64, @floatFromInt(i - 15)) * 0.8);
+    }
+
+    try testCompressionDecompression(
+        allocator,
+        mixed_knot_data.items,
+        0.1,
+        "Mixed knot showcase",
+    );
+
+    // Example 2: Sine wave (should be harder to compress)
+    print("\n=== Example 2: Sine wave ===\n", .{});
+    var sine_data = ArrayList(f64).init(allocator);
+    defer sine_data.deinit();
+
+    for (0..50) |i| {
+        const x: f64 = @as(f64, @floatFromInt(i)) * 0.2;
+        try sine_data.append(@sin(x));
+    }
+
+    try testCompressionDecompression(allocator, sine_data.items, 0.1, "Sine wave");
 
     // Example 4: Data with trend
     print("\n=== Example 4: Data with trend ===\n", .{});
@@ -24,18 +58,6 @@ pub fn main() !void {
     }
 
     try testCompressionDecompression(allocator, trend_data.items, 0.2, "Data with trend");
-
-    // Example 2: Sine wave (should be harder to compress)
-    print("\n=== Example 2: Sine wave ===\n", .{});
-    var sine_data = ArrayList(f64).init(allocator);
-    defer sine_data.deinit();
-
-    for (0..50) |i| {
-        const x: f64 = @as(f64, @floatFromInt(i)) * 0.2;
-        try sine_data.append(@sin(x));
-    }
-
-    try testCompressionDecompression(allocator, sine_data.items, 0.1, "Sine wave");
 
     // Example 3: Step function (should compress very well)
     print("\n=== Example 3: Step function ===\n", .{});
@@ -101,28 +123,6 @@ pub fn main() !void {
     try small_data.appendSlice(&small_values);
 
     try testCompressionDecompression(allocator, small_data.items, 0.1, "Small dataset");
-
-    // Example 8: Mixed knot showcase
-    print("\n=== Example 8: Mixed knot showcase ===\n", .{});
-    var mixed_knot_data = ArrayList(f64).init(allocator);
-    defer mixed_knot_data.deinit();
-
-    for (0..10) |i| {
-        try mixed_knot_data.append(@as(f64, @floatFromInt(i)) * 0.5);
-    }
-    for (10..15) |i| {
-        try mixed_knot_data.append(10.0 + @as(f64, @floatFromInt(i - 10)) * 0.3);
-    }
-    for (15..25) |i| {
-        try mixed_knot_data.append(11.5 + @as(f64, @floatFromInt(i - 15)) * 0.8);
-    }
-
-    try testCompressionDecompression(
-        allocator,
-        mixed_knot_data.items,
-        0.1,
-        "Mixed knot showcase",
-    );
 
     // Example 9: Zigzag pattern
     print("\n=== Example 9: Zigzag pattern ===\n", .{});
