@@ -40,6 +40,8 @@ Mirror TerseTS Method Enum.
     BitPackedBUFF = 17
     BitPackedDeltaEncoding = 18
     DiscreteFourierTransform = 19
+    MacaqueS = 20
+    MacaqueV = 21
 end
 
 """

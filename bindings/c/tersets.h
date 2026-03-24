@@ -29,6 +29,8 @@ enum Method {
   BitPackedBUFF                 = 17,
   BitPackedDeltaEncoding        = 18,
   DiscreteFourierTransform      = 19,
+  MacaqueS                      = 20,
+  MacaqueV                      = 21,
 };
 
 // A pointer to uncompressed values and the number of values.

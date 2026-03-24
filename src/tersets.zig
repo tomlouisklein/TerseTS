@@ -45,6 +45,9 @@ const bitpacked_quantization = @import(
 const serfqt = @import(
     "lossy_compression/value_representation/serf_qt.zig",
 );
+const macaque = @import(
+    "lossy_compression/value_representation/macaque.zig",
+);
 
 const buff = @import("lossy_compression/value_representation/bounded_fast_floats.zig");
 
@@ -97,6 +100,8 @@ pub const Method = enum {
     BitPackedBUFF,
     BitPackedDeltaEncoding,
     DiscreteFourierTransform,
+    MacaqueS,
+    MacaqueV,
 };
 
 /// Compress `uncompressed_values` using `method` and its `configuration` and returns the results
@@ -284,6 +289,22 @@ pub fn compress(
                 configuration,
             );
         },
+        .MacaqueS => {
+            try macaque.compressMacaqueS(
+                allocator,
+                uncompressed_values,
+                &compressed_values,
+                configuration,
+            );
+        },
+        .MacaqueV => {
+            try macaque.compressMacaqueV(
+                allocator,
+                uncompressed_values,
+                &compressed_values,
+                configuration,
+            );
+        },
     }
     try compressed_values.append(allocator, @intFromEnum(method));
     return compressed_values;
@@ -372,6 +393,12 @@ pub fn decompress(
         },
         .DiscreteFourierTransform => {
             try dft.decompress(allocator, compressed_values_slice, &decompressed_values);
+        },
+        .MacaqueS => {
+            try macaque.decompressMacaqueS(allocator, compressed_values_slice, &decompressed_values);
+        },
+        .MacaqueV => {
+            try macaque.decompressMacaqueV(allocator, compressed_values_slice, &decompressed_values);
         },
     }
 
@@ -525,6 +552,9 @@ pub fn extract(
         => {
             return Error.UnsupportedMethod;
         },
+        .MacaqueS, .MacaqueV => {
+            return Error.UnsupportedMethod;
+        },
     }
 }
 
@@ -670,6 +700,9 @@ pub fn rebuild(
         => {
             return Error.UnsupportedMethod;
         },
+        .MacaqueS, .MacaqueV => {
+            return Error.UnsupportedMethod;
+        },
     }
     try compressed_values.append(allocator, @intFromEnum(method));
     return compressed_values;
@@ -710,7 +743,9 @@ test "extract and rebuild works for any compression method supported" {
             method == Method.SerfQT or
             method == Method.RunLengthEncoding or
             method == Method.BitPackedDeltaEncoding or
-            method == Method.BitPackedBUFF)
+            method == Method.BitPackedBUFF or
+            method == Method.MacaqueS or
+            method == Method.MacaqueV)
         {
             // These compression methods are not supported for extraction
             // of the coefficients and indices. This is because even small
