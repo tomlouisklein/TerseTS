@@ -183,7 +183,7 @@ pub fn defaultConfigurationBuilder(
         },
 
         // Methods with empty configuration.
-        .RunLengthEncoding => try allocator.dupe(u8, "{}"),
+        .RunLengthEncoding, .BitPackedDeltaEncoding => try allocator.dupe(u8, "{}"),
     };
 }
 

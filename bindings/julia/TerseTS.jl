@@ -38,6 +38,7 @@ Mirror TerseTS Method Enum.
     NonLinearApproximation = 15
     SerfQT = 16
     BitPackedBUFF = 17
+    BitPackedDeltaEncoding = 18
 end
 
 """

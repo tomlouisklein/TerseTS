@@ -53,6 +53,7 @@ const vw = @import("lossy_compression/line_simplification/visvalingam_whyatt.zig
 const sliding_window = @import("lossy_compression/line_simplification/sliding_window.zig");
 const bottom_up = @import("lossy_compression/line_simplification/bottom_up.zig");
 const rle_encoding = @import("lossless_compression/run_length_encoding.zig");
+const delta_encoding = @import("lossless_compression/bitpacked_delta_encoding.zig");
 
 const extractors = @import("utilities/extractors.zig");
 const tester = @import("tester.zig");
@@ -92,6 +93,7 @@ pub const Method = enum {
     NonLinearApproximation,
     SerfQT,
     BitPackedBUFF,
+    BitPackedDeltaEncoding,
 };
 
 /// Compress `uncompressed_values` using `method` and its `configuration` and returns the results
@@ -257,6 +259,16 @@ pub fn compress(
         },
         .BitPackedBUFF => {
             try buff.compressBitPackedBUFF(
+        .BitPackedDeltaEncoding => {
+            try delta_encoding.compress(
+                allocator,
+                uncompressed_values,
+                &compressed_values,
+                configuration,
+            );
+        },
+        .BitPackedBUFF => {
+            try buff.compressBitPackedBUFF(
                 allocator,
                 uncompressed_values,
                 &compressed_values,
@@ -338,6 +350,9 @@ pub fn decompress(
         },
         .SerfQT => {
             try serfqt.decompress(allocator, compressed_values_slice, &decompressed_values);
+        },
+        .BitPackedDeltaEncoding => {
+            try delta_encoding.decompress(allocator, compressed_values_slice, &decompressed_values);
         },
         .BitPackedBUFF => {
             try buff.decompressBitPackedBUFF(
@@ -483,9 +498,10 @@ pub fn extract(
         // In case of RLE, modifying the coefficients can disrupt the run-length
         // encoding scheme, also leading to incorrect decompression results.
         .BitPackedQuantization,
-        .RunLengthEncoding,
-        .BitPackedBUFF,
         .SerfQT,
+        .RunLengthEncoding,
+        .BitPackedDeltaEncoding,
+        .BitPackedBUFF,
         => {
             return Error.UnsupportedMethod;
         },
@@ -619,9 +635,10 @@ pub fn rebuild(
         // In case of RLE, modifying the coefficients can disrupt the run-length
         // encoding scheme, also leading to incorrect decompression results.
         .BitPackedQuantization,
-        .BitPackedBUFF,
-        .SerfQT,
+        .BitPackedDeltaEncoding,
         .RunLengthEncoding,
+        .SerfQT,
+        .BitPackedBUFF,
         => {
             return Error.UnsupportedMethod;
         },
@@ -664,6 +681,7 @@ test "extract and rebuild works for any compression method supported" {
         if (method == Method.BitPackedQuantization or
             method == Method.SerfQT or
             method == Method.RunLengthEncoding or
+            method == Method.BitPackedDeltaEncoding or
             method == Method.BitPackedBUFF)
         {
             // These compression methods are not supported for extraction
