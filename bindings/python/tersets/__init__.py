@@ -153,6 +153,7 @@ class Method(Enum):
     SerfQT = 16
     BitPackedBUFF = 17
     BitPackedDeltaEncoding = 18
+    DiscreteFourierTransform = 19
 
 
 # Public API. 

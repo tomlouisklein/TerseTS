@@ -28,6 +28,7 @@ enum Method {
   SerfQT                        = 16,
   BitPackedBUFF                 = 17,
   BitPackedDeltaEncoding        = 18,
+  DiscreteFourierTransform      = 19,
 };
 
 // A pointer to uncompressed values and the number of values.
