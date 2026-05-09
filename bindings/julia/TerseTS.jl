@@ -42,6 +42,7 @@ Mirror TerseTS Method Enum.
     DiscreteFourierTransform = 19
     MacaqueS = 20
     MacaqueV = 21
+    MixedTypePLA = 22
 end
 
 """

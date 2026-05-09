@@ -86,6 +86,20 @@ end
     @test length(decompressed_values) == length(uncompressed_values)
 end
 
+@testset "Compress with MixedTypePLA Method and Decompress" begin
+    n = 100
+    uncompressed_values = randn(n) .* 1e3 .+ 0.123
+
+    compressed_values = TerseTS.compress(
+        uncompressed_values,
+        TerseTS.MixedTypePLA,
+        "{\"abs_error_bound\": 10}",
+    )
+    decompressed_values = TerseTS.decompress(compressed_values)
+
+    @test length(decompressed_values) == length(uncompressed_values)
+end
+
 @testset "Julia Method Enum Matches C and Zig Enums" begin
     # Get repository root
     repo_root = normpath(joinpath(@__DIR__, "..", ".."))

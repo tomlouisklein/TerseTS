@@ -150,6 +150,7 @@ pub fn defaultConfigurationBuilder(
         .BitPackedQuantization,
         .MacaqueS,
         .MacaqueV,
+        .MixedTypePLA,
         => blk: {
             break :blk try getDefaultAbsoluteErrorConfiguration(
                 allocator,

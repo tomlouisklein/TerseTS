@@ -134,6 +134,28 @@ class TerseTSPythonTest(unittest.TestCase):
 
         self.assertEqual(len(uncompressed), len(decompressed))
 
+    def test_mixed_type_pla_and_inverse(self):
+        """Test that MixedTypePLA compression/decompression preserves sequence length"""
+        random.seed(time.time())
+        count = 0
+        uncompressed = []
+
+        while count < TEST_VALUE_COUNT:
+            random_value = generate_random_f64()
+            if is_finite_and_real(random_value):
+                count += 1
+                uncompressed.append(random_value)
+
+        compressed = compress(uncompressed,
+                              Method.MixedTypePLA,
+                              {"abs_error_bound": 10})
+        decompressed = decompress(compressed)
+
+        if type(uncompressed) is not type(decompressed):
+            decompressed = list(decompressed)
+
+        self.assertEqual(len(uncompressed), len(decompressed))
+
 
 class MethodEnumMatchTest(unittest.TestCase):
     """Test that the Python Method enum matches the Zig and C Method enums."""
